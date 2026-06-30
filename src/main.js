@@ -743,9 +743,42 @@ const BUILDS = [
 
 const DIFF_BADGE = { 'Beginner':'beginner','Intermediate':'intermediate','Advanced':'advanced','Expert':'expert' };
 
+// ─── WEBGL CHECK ────────────────────────────────────────────────────────────
+function showError(msg) {
+  const el = document.getElementById('loading');
+  el.innerHTML = `
+    <div style="text-align:center;padding:30px;max-width:480px">
+      <div style="font-size:48px;margin-bottom:16px">⚠️</div>
+      <div style="font-size:18px;font-weight:700;margin-bottom:12px;color:#e94560">Viewer kon niet laden</div>
+      <div style="font-size:13px;opacity:0.75;line-height:1.7;margin-bottom:20px">${msg}</div>
+      <div style="font-size:12px;opacity:0.5">Open in Chrome, Firefox of Edge op een desktop PC.</div>
+    </div>`;
+  el.classList.remove('hidden');
+}
+
+function checkWebGL() {
+  try {
+    const c = document.createElement('canvas');
+    return !!(window.WebGLRenderingContext && (c.getContext('webgl') || c.getContext('experimental-webgl')));
+  } catch(e) { return false; }
+}
+
+if (!checkWebGL()) {
+  document.addEventListener('DOMContentLoaded', () => {
+    showError('Je browser ondersteunt geen WebGL.<br>WebGL is nodig voor de 3D weergave.');
+  });
+  throw new Error('no webgl');
+}
+
 // ─── THREE.JS SETUP ─────────────────────────────────────────────────────────
 const wrap = document.getElementById('canvas-wrap');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+} catch(e) {
+  showError('WebGL renderer kon niet starten.<br>Probeer hardware-acceleratie in te schakelen in je browserinstellingen.');
+  throw e;
+}
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -814,7 +847,7 @@ let exploded = false;
 function loadBuild(idx) {
   document.getElementById('loading').classList.remove('hidden');
 
-  setTimeout(() => {
+  setTimeout(() => { try {
     // Clear
     while (buildGroup.children.length) {
       buildGroup.remove(buildGroup.children[0]);
@@ -893,7 +926,10 @@ function loadBuild(idx) {
     });
 
     document.getElementById('loading').classList.add('hidden');
-  }, 50);
+  } catch(err) {
+    showError('Fout bij laden van build:<br><code style="font-size:11px">' + err.message + '</code>');
+    console.error(err);
+  }}, 50);
 }
 
 // Layer slider
