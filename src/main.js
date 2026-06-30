@@ -1,0 +1,960 @@
+
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+
+// ─── TEXTURE FACTORY ────────────────────────────────────────────────────────
+function makeTex(r, g, b, pattern = 'plain', bright = 0) {
+  const S = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const cx = c.getContext('2d');
+  const rr = Math.min(255, r + bright), gg = Math.min(255, g + bright), bb = Math.min(255, b + bright);
+  cx.fillStyle = `rgb(${rr},${gg},${bb})`;
+  cx.fillRect(0, 0, S, S);
+
+  if (pattern === 'planks') {
+    cx.fillStyle = 'rgba(0,0,0,0.18)';
+    for (let y = 0; y < S; y += 8) cx.fillRect(0, y, S, 1);
+    cx.fillStyle = 'rgba(0,0,0,0.22)';
+    for (let x = 0; x < S; x += 16) cx.fillRect(x, 0, 1, S);
+    cx.fillStyle = `rgba(${Math.min(255,rr+20)},${Math.min(255,gg+20)},${Math.min(255,bb+20)},0.15)`;
+    for (let y = 0; y < S; y += 8) cx.fillRect(2, y + 2, S - 4, 3);
+  } else if (pattern === 'log_side') {
+    cx.fillStyle = 'rgba(0,0,0,0.14)';
+    for (let x = 0; x < S; x += 5) cx.fillRect(x, 0, 2, S);
+    cx.fillStyle = 'rgba(255,255,255,0.06)';
+    for (let x = 3; x < S; x += 5) cx.fillRect(x, 0, 1, S);
+  } else if (pattern === 'log_top') {
+    cx.strokeStyle = 'rgba(0,0,0,0.18)';
+    cx.lineWidth = 1.5;
+    for (let rx = 6; rx < S / 2; rx += 5) {
+      cx.beginPath(); cx.arc(S / 2, S / 2, rx, 0, Math.PI * 2); cx.stroke();
+    }
+  } else if (pattern === 'stone') {
+    cx.fillStyle = 'rgba(0,0,0,0.08)';
+    for (let i = 0; i < 3; i++) cx.fillRect(Math.random() * S, 0, 1, S);
+    for (let i = 0; i < 3; i++) cx.fillRect(0, Math.random() * S, S, 1);
+    cx.fillStyle = 'rgba(255,255,255,0.06)';
+    for (let i = 0; i < 8; i++) cx.fillRect(Math.random() * S, Math.random() * S, 4, 4);
+  } else if (pattern === 'bricks') {
+    cx.fillStyle = 'rgba(0,0,0,0.35)';
+    for (let row = 0; row < 4; row++) {
+      const y = row * 16; cx.fillRect(0, y, S, 2);
+      const off = (row % 2) * 8;
+      for (let x = off; x < S + 16; x += 16) cx.fillRect(x, y, 2, 16);
+    }
+    cx.fillStyle = 'rgba(255,255,255,0.06)';
+    for (let row = 0; row < 4; row++) cx.fillRect(4, row * 16 + 4, S - 8, 4);
+  } else if (pattern === 'leaves') {
+    cx.fillStyle = 'rgba(0,0,0,0.25)';
+    for (let i = 0; i < 25; i++) cx.fillRect(Math.random() * S, Math.random() * S, 3, 3);
+    cx.fillStyle = 'rgba(255,255,255,0.12)';
+    for (let i = 0; i < 10; i++) cx.fillRect(Math.random() * S, Math.random() * S, 2, 2);
+  } else if (pattern === 'glass') {
+    cx.fillStyle = 'rgba(255,255,255,0.25)';
+    cx.fillRect(4, 4, S - 8, 4);
+    cx.fillRect(4, 4, 4, S - 8);
+  } else if (pattern === 'gravel') {
+    for (let i = 0; i < 30; i++) {
+      const gs = Math.floor(Math.random() * 20 + 100);
+      cx.fillStyle = `rgb(${gs},${gs},${gs})`;
+      cx.fillRect(Math.random() * S, Math.random() * S, 6, 6);
+    }
+  } else if (pattern === 'grass_top') {
+    cx.fillStyle = 'rgba(255,255,255,0.07)';
+    for (let i = 0; i < 15; i++) cx.fillRect(Math.random() * S, Math.random() * S, 3, 6);
+  } else if (pattern === 'concrete') {
+    cx.fillStyle = 'rgba(0,0,0,0.05)';
+    for (let i = 0; i < 6; i++) cx.fillRect(Math.random() * S, Math.random() * S, 8, 1);
+  }
+
+  // Outer edge shadow for depth
+  cx.strokeStyle = 'rgba(0,0,0,0.3)'; cx.lineWidth = 2;
+  cx.strokeRect(1, 1, S - 2, S - 2);
+  // Inner highlight
+  cx.strokeStyle = 'rgba(255,255,255,0.08)'; cx.lineWidth = 1;
+  cx.strokeRect(2, 2, S - 4, S - 4);
+
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter;
+  return t;
+}
+
+function makeMatSet(r, g, b, sidePattern, topPattern, emissive = 0) {
+  const sideTex = makeTex(r, g, b, sidePattern);
+  const topTex = makeTex(Math.min(255, r + 18), Math.min(255, g + 18), Math.min(255, b + 18), topPattern || sidePattern, 0);
+  const botTex = makeTex(Math.max(0, r - 22), Math.max(0, g - 22), Math.max(0, b - 22), sidePattern, 0);
+  const mk = (t, em = 0) => {
+    const m = new THREE.MeshLambertMaterial({ map: t });
+    if (em) { m.emissive = new THREE.Color(em); m.emissiveIntensity = 0.5; }
+    return m;
+  };
+  // +X, -X, +Y, -Y, +Z, -Z
+  return [mk(sideTex), mk(sideTex), mk(topTex, emissive), mk(botTex), mk(sideTex), mk(sideTex)];
+}
+
+function makeGlassMat(r, g, b) {
+  const t = makeTex(r, g, b, 'glass');
+  const m = new THREE.MeshLambertMaterial({ map: t, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
+  return [m, m, m, m, m, m];
+}
+
+// ─── BLOCK DEFINITIONS ───────────────────────────────────────────────────────
+const BLOCKS = {
+  OL:  { name: 'Oak Log',           mats: makeMatSet(103, 78, 40,  'log_side', 'log_top'),  color: '#67522b' },
+  OP:  { name: 'Oak Planks',        mats: makeMatSet(196,159, 90,  'planks'),               color: '#c49f5a' },
+  SP:  { name: 'Spruce Planks',     mats: makeMatSet(104, 78, 47,  'planks'),               color: '#684e2f' },
+  SL:  { name: 'Spruce Log',        mats: makeMatSet( 72, 52, 25,  'log_side', 'log_top'),  color: '#483419' },
+  DP:  { name: 'Dark Oak Planks',   mats: makeMatSet( 55, 33,  8,  'planks'),               color: '#372108' },
+  SB:  { name: 'Stone Bricks',      mats: makeMatSet(128,128,128,  'bricks'),               color: '#808080' },
+  CB:  { name: 'Cobblestone',       mats: makeMatSet(112,112,112,  'stone'),                color: '#707070' },
+  MSB: { name: 'Mossy Stone Bricks',mats: makeMatSet( 88,112, 80,  'bricks'),               color: '#587050' },
+  CSB: { name: 'Cracked Stone Bricks',mats: makeMatSet(110,105,105,'bricks'),               color: '#6e6969' },
+  NB:  { name: 'Nether Bricks',     mats: makeMatSet( 44, 22, 26,  'bricks'),               color: '#2c161a' },
+  DS:  { name: 'Deepslate Bricks',  mats: makeMatSet( 60, 60, 65,  'bricks'),               color: '#3c3c41' },
+  GL:  { name: 'Glass',             mats: makeGlassMat(140, 210, 240),                       color: '#8cd2f0', transparent: true },
+  GP:  { name: 'Glass Pane',        mats: makeGlassMat(140, 210, 240),                       color: '#8cd2f0', transparent: true },
+  GR:  { name: 'Grass Block',       mats: makeMatSet(  90,150, 58,  'grass_top', 'grass_top'), color: '#5a9638' },
+  DT:  { name: 'Dirt',              mats: makeMatSet(137, 99, 63,   'stone'),               color: '#89633f' },
+  QZ:  { name: 'Quartz Block',      mats: makeMatSet(236,232,225,   'stone'),               color: '#ece8e1' },
+  WC:  { name: 'White Concrete',    mats: makeMatSet(207,210,209,   'concrete'),             color: '#cfd2d1' },
+  GC:  { name: 'Gray Concrete',     mats: makeMatSet( 55, 58, 62,   'concrete'),             color: '#373a3e' },
+  BC:  { name: 'Black Concrete',    mats: makeMatSet( 8,  10, 15,   'concrete'),             color: '#080a0f' },
+  LC:  { name: 'Light Gray Concrete',mats: makeMatSet(125,125,115,  'concrete'),             color: '#7d7d73' },
+  IB:  { name: 'Iron Block',        mats: makeMatSet(175,182,184,   'stone'),               color: '#afb6b8' },
+  PP:  { name: 'Purple Concrete',   mats: makeMatSet(100, 31,156,   'concrete'),             color: '#641f9c' },
+  PC:  { name: 'Purpur Block',      mats: makeMatSet(169,125,167,   'bricks'),               color: '#a97da7' },
+  OB:  { name: 'Obsidian',          mats: makeMatSet( 15, 12, 26,   'stone'),               color: '#0f0c1a' },
+  END: { name: 'End Stone Bricks',  mats: makeMatSet(216,209,157,   'bricks'),               color: '#d8d19d' },
+  OLV: { name: 'Oak Leaves',        mats: makeMatSet( 55,130, 38,   'leaves'),               color: '#378226', transparent: true },
+  SLV: { name: 'Spruce Leaves',     mats: makeMatSet( 38, 90, 25,   'leaves'),               color: '#265a19', transparent: true },
+  LN:  { name: 'Lantern',           mats: makeMatSet(255,200,  0,   'plain',  null,  0xFF8800), color: '#ffc800', emissive: true },
+  GT:  { name: 'Glowstone',         mats: makeMatSet(255,220,100,   'plain',  null,  0xFFAA00), color: '#ffdc64', emissive: true },
+  HB:  { name: 'Hay Bale',          mats: makeMatSet(196,172, 28,   'planks', 'log_top'),   color: '#c4ac1c' },
+  WP:  { name: 'White Planks',      mats: makeMatSet(220,220,210,   'planks'),               color: '#dcdcd2' },
+  CP:  { name: 'Campfire',          mats: makeMatSet(200, 80,  0,   'plain',  null,  0xFF4400), color: '#c85000', emissive: true },
+  GV:  { name: 'Gravel',            mats: makeMatSet(150,145,138,   'gravel'),               color: '#96918a' },
+  PAT: { name: 'Grass Path',        mats: makeMatSet(160,135, 70,   'stone'),                color: '#a08746' },
+  WA:  { name: 'Water',             mats: (() => { const m = new THREE.MeshLambertMaterial({ color: 0x3399FF, transparent: true, opacity: 0.6 }); return [m,m,m,m,m,m]; })(), color: '#3399ff', transparent: true },
+};
+
+// ─── BUILD GENERATORS ───────────────────────────────────────────────────────
+
+function buildStarterHouse() {
+  const vox = [];
+  const add = (x, y, z, t) => vox.push({ x, y, z, t });
+  const W = 15, D = 11;
+  const logs = new Set(['0,0','14,0','0,4','14,4','0,10','14,10']);
+  const isLog = (x,z) => logs.has(`${x},${z}`);
+
+  // Foundation
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,0,z,'CB');
+
+  // Floor Y=1
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,1,z, isLog(x,z)?'OL':'OP');
+
+  // Walls Y=2–5
+  for (let y=2;y<=5;y++) {
+    for (let x=0;x<W;x++) {
+      for (let z=0;z<D;z++) {
+        const onS=z===0, onN=z===D-1, onW=x===0, onE=x===W-1;
+        const onPerim = onS||onN||onW||onE;
+        const onIntWall = z===4;
+        const isDoor = onS && (x===6||x===7) && y<=3;
+        const isFWin = onS && (x===2||x===3||x===9||x===10) && y>=3 && y<=4;
+        const isBWin = onN && (x===3||x===4||x===8||x===9) && y>=3 && y<=4;
+        if (isDoor||isFWin||isBWin) continue;
+        if (onPerim) { add(x,y,z, isLog(x,z)?'OL':'SB'); }
+        else if (onIntWall) {
+          if (y===2 && (x===6||x===7)) continue;
+          add(x,y,z,'SB');
+        }
+      }
+    }
+  }
+
+  // Ceiling Y=6
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,6,z,'OP');
+
+  // Roof Y=7 (stepped gable - runs East/West, ridge at center x=7)
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,7,z, (x===6||x===7)?'OP':'SP');
+  // Ridge cap Y=8
+  for (let z=0;z<D;z++) { add(6,8,z,'OP'); add(7,8,z,'OP'); }
+
+  // Ground lanterns
+  add(0,2,0,'LN'); add(14,2,0,'LN');
+  return vox;
+}
+
+function buildMedievalHouse() {
+  const vox = [];
+  const add = (x,y,z,t) => vox.push({x,y,z,t});
+  const W=13, D=15;
+  const isLog = (x,z) => {
+    const corners = new Set(['0,0','12,0','0,4','12,4','0,8','12,8','0,14','12,14']);
+    return corners.has(`${x},${z}`);
+  };
+
+  // Foundation
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,0,z,'CB');
+
+  // Floor Y=1
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,1,z,(x+z)%2===0?'SB':'DP');
+
+  // Walls Y=2–4 (lower story — Cobblestone)
+  for (let y=2;y<=4;y++) {
+    for (let x=0;x<W;x++) for (let z=0;z<D;z++) {
+      const onS=z===0,onN=z===D-1,onW=x===0,onE=x===W-1;
+      const onPerim=onS||onN||onW||onE;
+      const onInt=z===4||z===9;
+      const isDoor=onS&&(x===5||x===6)&&y<=3;
+      const isFWin=onS&&(x===2||x===3||x===9||x===10)&&y>=3&&y<=4;
+      const isBWin=onN&&(x===3||x===4||x===5||x===8||x===9||x===10)&&y>=3&&y<=4;
+      if (isDoor||isFWin||isBWin) continue;
+      if (onPerim) add(x,y,z,isLog(x,z)?'OL':'CB');
+      else if (onInt) { if (y===2&&(x===5||x===6)) continue; add(x,y,z,'CB'); }
+    }
+  }
+
+  // Horizontal beam Y=5
+  for (let x=0;x<W;x++) { add(x,5,0,'OL'); add(x,5,D-1,'OL'); }
+  for (let z=1;z<D-1;z++) { add(0,5,z,'OL'); add(W-1,5,z,'OL'); }
+
+  // Upper story Y=6–8 (Spruce Planks)
+  for (let y=6;y<=8;y++) {
+    for (let x=0;x<W;x++) for (let z=0;z<D;z++) {
+      const onS=z===0,onN=z===D-1,onW=x===0,onE=x===W-1;
+      const onPerim=onS||onN||onW||onE;
+      const onInt=z===4||z===9;
+      const isUWin=onS&&(x===5||x===6||x===7)&&y>=6&&y<=7;
+      const isBUWin=onN&&(x===2||x===3||x===4||x===9||x===10||x===11)&&y>=6&&y<=7;
+      if (isUWin||isBUWin) continue;
+      if (onPerim) add(x,y,z,isLog(x,z)?'OL':'SP');
+      else if (onInt) { if (y===6&&(x===5||x===6)) continue; add(x,y,z,'SP'); }
+    }
+  }
+
+  // Ceiling Y=9
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,9,z,'OP');
+
+  // Roof Y=10–13 (gable North–South, ridge at center z=7)
+  const roofH = [10,11,12,13];
+  for (let y=10;y<=13;y++) {
+    const margin = y - 10; // 0,1,2,3
+    const zMin = margin, zMax = D-1-margin;
+    for (let z=zMin;z<=zMax;z++) for (let x=0;x<W;x++) {
+      const isRidge = z===7||z===8;
+      add(x,y,z, isRidge?'SL':'SP');
+    }
+  }
+
+  // Lanterns
+  add(0,3,0,'LN'); add(W-1,3,0,'LN');
+  return vox;
+}
+
+function buildModernHouse() {
+  const vox = [];
+  const add = (x,y,z,t) => vox.push({x,y,z,t});
+  const W=20,D=15,H=10;
+
+  // Foundation / ground
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,0,z,'GC');
+
+  // Floor
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,1,z,'WC');
+
+  // Main walls Y=2–8 (White Concrete / Glass)
+  for (let y=2;y<=8;y++) {
+    for (let x=0;x<W;x++) for (let z=0;z<D;z++) {
+      const onS=z===0,onN=z===D-1,onW=x===0,onE=x===W-1;
+      const onPerim=onS||onN||onW||onE;
+      // Large window strips on South face y=3-7
+      const isSWin = onS && x>=3 && x<=16 && y>=3 && y<=7;
+      // North face windows
+      const isNWin = onN && (x>=2&&x<=6||x>=13&&x<=17) && y>=3 && y<=7;
+      // Side windows
+      const isSideWin = (onW||onE) && x!==0&&x!==W-1 && z>=2&&z<=12 && y>=4&&y<=6;
+      // Interior divider at z=9
+      const onDiv = z===9;
+      if (isSWin||isNWin) { if (y>=3&&y<=7) { add(x,y,z,'GL'); continue; } }
+      if (onPerim) add(x,y,z,'WC');
+      else if (onDiv) { if (y<=5&&(x>=8&&x<=11)) continue; add(x,y,z,'GC'); }
+    }
+  }
+
+  // Flat roof Y=9 (concrete with slight overhang)
+  for (let z=-1;z<D+1;z++) for (let x=-1;x<W+1;x++) add(x,9,z,'GC');
+  // Roof deck accent
+  for (let z=1;z<D-1;z++) for (let x=1;x<W-1;x++) add(x,10,z,'BC');
+
+  // Cantilevered upper section (partial second floor)
+  for (let y=9;y<=11;y++) {
+    for (let x=0;x<12;x++) for (let z=0;z<D;z++) {
+      const onPerim=z===0||z===D-1||x===0||x===11;
+      const isWin=z===0&&x>=2&&x<=9&&y>=9&&y<=11;
+      if (isWin) { add(x,y,z,'GL'); continue; }
+      if (onPerim) add(x,y,z,'WC');
+    }
+  }
+  for (let z=0;z<D;z++) for (let x=0;x<12;x++) add(x,12,z,'GC');
+
+  // Pool (East side)
+  for (let z=3;z<12;z++) for (let x=14;x<20;x++) add(x,1,z,'WA');
+  // Pool edge
+  for (let z=2;z<=12;z++) { add(13,1,z,'WC'); add(20,1,z,'WC'); }
+  for (let x=13;x<=20;x++) { add(x,1,2,'WC'); add(x,1,12,'WC'); }
+
+  // Glowstone lighting
+  add(5,8,1,'GT'); add(15,8,1,'GT'); add(5,8,D-2,'GT'); add(15,8,D-2,'GT');
+  return vox;
+}
+
+function buildWizardTower() {
+  const vox = [];
+  const add = (x,y,z,t) => vox.push({x,y,z,t});
+  const R=4; // radius
+  const CX=9,CZ=9;
+
+  // Base platform
+  for (let z=0;z<19;z++) for (let x=0;x<19;x++) {
+    const dx=x-CX, dz=z-CZ;
+    if (dx*dx+dz*dz<=36) add(x,0,z,'DS');
+  }
+
+  // Tower walls (hollow cylinder)
+  for (let y=1;y<=22;y++) {
+    for (let x=0;x<19;x++) for (let z=0;z<19;z++) {
+      const dx=x-CX, dz=z-CZ;
+      const d2=dx*dx+dz*dz;
+      if (d2<=R*R && d2>=(R-1)*(R-1)) {
+        // Windows every 5 layers
+        const isWin = (y%5===0||y%5===1) && (Math.abs(dx)<=1&&dz===R-1||Math.abs(dx)<=1&&dz===-(R-1)||Math.abs(dz)<=1&&dx===R-1||Math.abs(dz)<=1&&dx===-(R-1));
+        add(x,y,z, isWin?'GP':'PP');
+      }
+      // Floor every 6 levels
+      if ((y%6===0) && d2<=(R-1)*(R-1)) add(x,y,z,'DS');
+    }
+  }
+
+  // Battlements Y=23
+  for (let x=0;x<19;x++) for (let z=0;z<19;z++) {
+    const dx=x-CX, dz=z-CZ;
+    const d2=dx*dx+dz*dz;
+    if (d2<=R*R && d2>=(R-2)*(R-2)) {
+      const isMerl=(Math.abs(dx)+Math.abs(dz))%2===0;
+      if (isMerl) add(x,23,z,'DS');
+    }
+  }
+
+  // Spire Y=24–32
+  for (let y=24;y<=31;y++) {
+    const r=Math.max(0, Math.ceil((31-y)/2));
+    for (let x=CX-r;x<=CX+r;x++) for (let z=CZ-r;z<=CZ+r;z++) {
+      const dx=x-CX, dz=z-CZ;
+      if (Math.abs(dx)===r||Math.abs(dz)===r) add(x,y,z,'OB');
+    }
+  }
+  // Tip
+  add(CX,32,CZ,'GT');
+
+  // Glowstone rings
+  for (let x=0;x<19;x++) for (let z=0;z<19;z++) {
+    const dx=x-CX,dz=z-CZ;
+    const d2=dx*dx+dz*dz;
+    if (d2<=R*R&&d2>=(R-1)*(R-1)) {
+      if ((dx===0&&dz===R-1)||(dx===R-1&&dz===0)||(dx===0&&dz===-(R-1))||(dx===-(R-1)&&dz===0)) {
+        [6,12,18].forEach(y=>add(x,y,z,'GT'));
+      }
+    }
+  }
+  return vox;
+}
+
+function buildMedievalCastle() {
+  const vox = [];
+  const add = (x,y,z,t) => vox.push({x,y,z,t});
+  const W=35,D=35;
+
+  // Outer walls
+  for (let y=1;y<=12;y++) {
+    for (let x=0;x<W;x++) {
+      for (let z=0;z<D;z++) {
+        const onS=z===0,onN=z===D-1,onW=x===0,onE=x===W-1;
+        const onPerim=onS||onN||onW||onE;
+        if (!onPerim) continue;
+        const isGateway=onS&&x>=15&&x<=19&&y<=6;
+        if (isGateway) continue;
+        const isDoor=onN&&x>=16&&x<=18&&y<=5;
+        if (isDoor) continue;
+        add(x,y,z,'SB');
+      }
+    }
+  }
+
+  // Battlements Y=13 (crenellations)
+  for (let x=0;x<W;x++) {
+    for (let z=0;z<D;z++) {
+      const onS=z===0,onN=z===D-1,onW=x===0,onE=x===W-1;
+      if (!( onS||onN||onW||onE)) continue;
+      const isMerl = (x%2===0||z%2===0);
+      if (isMerl) add(x,13,z,'SB');
+    }
+  }
+
+  // Corner towers (5×5, height 18)
+  [[0,0],[30,0],[0,30],[30,30]].forEach(([tx,tz])=>{
+    for (let y=1;y<=18;y++) {
+      for (let x=tx;x<tx+5;x++) for (let z=tz;z<tz+5;z++) {
+        const onP=x===tx||x===tx+4||z===tz||z===tz+4;
+        if (onP) add(x,y,z,'SB');
+        else if (y===1||y===13) add(x,y,z,'CB');
+      }
+    }
+    // Tower battlements
+    for (let x=tx;x<tx+5;x++) for (let z=tz;z<tz+5;z++) {
+      const onP=x===tx||x===tx+4||z===tz||z===tz+4;
+      if (onP&&(x%2===0||z%2===0)) add(x,19,z,'SB');
+    }
+  });
+
+  // Inner keep (center, 13×13, height 16)
+  const KX=11,KZ=11,KW=13,KD=13;
+  for (let y=1;y<=16;y++) {
+    for (let x=KX;x<KX+KW;x++) for (let z=KZ;z<KZ+KD;z++) {
+      const onP=x===KX||x===KX+KW-1||z===KZ||z===KZ+KD-1;
+      const isDoor=x>=KX+5&&x<=KX+7&&z===KZ&&y<=5;
+      if (isDoor) continue;
+      const isWin=(onP)&&(y===7||y===8)&&(x>=KX+3&&x<=KX+9);
+      if (isWin) { add(x,y,z,'GP'); continue; }
+      if (onP) add(x,y,z,'MSB');
+    }
+  }
+  // Keep roof
+  for (let z=KZ;z<KZ+KD;z++) for (let x=KX;x<KX+KW;x++) add(x,17,z,'SB');
+  // Keep battlements
+  for (let x=KX;x<KX+KW;x++) for (let z=KZ;z<KZ+KD;z++) {
+    const onP=x===KX||x===KX+KW-1||z===KZ||z===KZ+KD-1;
+    if (onP&&(x%2===0||z%2===0)) add(x,18,z,'SB');
+  }
+
+  // Courtyard floor
+  for (let z=1;z<D-1;z++) for (let x=1;x<W-1;x++) {
+    if (x<KX||x>=KX+KW||z<KZ||z>=KZ+KD) add(x,0,z,'CB');
+  }
+  // Well
+  add(5,0,5,'CB'); add(6,0,5,'CB'); add(5,0,6,'CB'); add(6,0,6,'CB');
+  add(5,1,5,'CB'); add(6,1,5,'CB'); add(5,1,6,'CB'); add(6,1,6,'CB');
+
+  return vox;
+}
+
+function buildJapanesePagoda() {
+  const vox = [];
+  const add = (x,y,z,t) => vox.push({x,y,z,t});
+  const floors = [
+    {w:13,y:1,h:5},
+    {w:11,y:7,h:5},
+    {w:9, y:13,h:5},
+    {w:7, y:19,h:4},
+  ];
+
+  floors.forEach(({w,y,h},fi) => {
+    const off = Math.floor((13-w)/2);
+    const cx = 6, cz = 6;
+    const hw = Math.floor(w/2);
+
+    // Floor
+    for (let z=cx-hw;z<=cx+hw;z++) for (let x=cx-hw;x<=cx+hw;x++) add(x,y,z,'DP');
+
+    // Walls
+    for (let dy=1;dy<=h-1;dy++) {
+      for (let x=cx-hw;x<=cx+hw;x++) for (let z=cx-hw;z<=cx+hw;z++) {
+        const onP=x===cx-hw||x===cx+hw||z===cx-hw||z===cx+hw;
+        if (!onP) continue;
+        const isWin=dy===2&&(Math.abs(x-cx)===hw||Math.abs(z-cz)===hw)&&(Math.abs(z-cz)<=1||Math.abs(x-cx)<=1);
+        if (isWin&&dy>=2&&dy<=3) { add(x,y+dy,z,'GP'); continue; }
+        add(x,y+dy,z,'DP');
+      }
+    }
+
+    // Roof eaves (overhang by 1, dark oak planks, stair shape)
+    const roofY=y+h;
+    for (let dz=-hw-1;dz<=hw+1;dz++) for (let dx=-hw-1;dx<=hw+1;dx++) {
+      const ax=cx+dx, az=cz+dz;
+      if (Math.abs(dx)===hw+1||Math.abs(dz)===hw+1) add(ax,roofY,az,'DP');
+      else if (Math.abs(dx)===hw||Math.abs(dz)===hw) add(ax,roofY,az,'DP');
+      else if (fi<3) add(ax,roofY,az,'DP');
+    }
+    // Upswept corners
+    [[-hw-1,-hw-1],[-hw-1,hw+1],[hw+1,-hw-1],[hw+1,hw+1]].forEach(([dx,dz])=>{
+      add(cx+dx,roofY+1,cz+dz,'DP');
+    });
+  });
+
+  // Spire
+  for (let y=24;y<=30;y++) add(6,y,6,'SL');
+  add(6,31,6,'LN');
+
+  // Ground platform
+  for (let z=0;z<14;z++) for (let x=0;x<14;x++) add(x,0,z,'SB');
+  return vox;
+}
+
+function buildWindmill() {
+  const vox = [];
+  const add = (x,y,z,t) => vox.push({x,y,z,t});
+  const CX=5,CZ=5;
+
+  // Base platform
+  for (let z=0;z<11;z++) for (let x=0;x<11;x++) {
+    if (Math.abs(x-CX)+Math.abs(z-CZ)<=6) add(x,0,z,'CB');
+  }
+
+  // Circular tower (tapered)
+  for (let y=1;y<=18;y++) {
+    const r = Math.max(2, 4 - Math.floor(y/6));
+    for (let x=0;x<11;x++) for (let z=0;z<11;z++) {
+      const dx=x-CX,dz=z-CZ;
+      const d=Math.sqrt(dx*dx+dz*dz);
+      if (d>=r-0.5&&d<=r+0.5) {
+        const isWin=y%5===0&&(dx===0||dz===0);
+        add(x,y,z, isWin?'GP':'CB');
+      } else if (d<r-0.5&&(y%6===0||y===1)) add(x,y,z,'OP');
+    }
+  }
+
+  // Conical roof Y=19–24
+  for (let y=19;y<=24;y++) {
+    const r=Math.max(0,3-(y-19));
+    for (let x=CX-r;x<=CX+r;x++) for (let z=CZ-r;z<=CZ+r;z++) {
+      const dx=x-CX,dz=z-CZ;
+      if (Math.abs(dx)===r||Math.abs(dz)===r||r<=1) add(x,y,z,'SP');
+    }
+  }
+
+  // Sails (4 directions from Y=14, length 8)
+  // North sail
+  for (let i=1;i<=7;i++) {
+    add(CX,14+i,CZ-i,'SP'); add(CX,14-i,CZ-i,'SP');
+    add(CX,14,CZ-i,'OL');
+  }
+  // East sail
+  for (let i=1;i<=7;i++) {
+    add(CX+i,14+i,CZ,'SP'); add(CX+i,14-i,CZ,'SP');
+    add(CX+i,14,CZ,'OL');
+  }
+
+  // Door
+  add(CX,2,CZ-3,'OP'); add(CX,3,CZ-3,'OP');
+  // Windows
+  add(CX,7,CZ-2,'GP'); add(CX,12,CZ-2,'GP');
+
+  return vox;
+}
+
+function buildWarehouse() {
+  const vox = [];
+  const add = (x,y,z,t) => vox.push({x,y,z,t});
+  const W=25,D=15,H=9;
+
+  // Floor
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,0,z,'CB');
+
+  // Walls
+  for (let y=1;y<=H;y++) {
+    for (let x=0;x<W;x++) for (let z=0;z<D;z++) {
+      const onS=z===0,onN=z===D-1,onW=x===0,onE=x===W-1;
+      const onPerim=onS||onN||onW||onE;
+      if (!onPerim) continue;
+      const isDoor=onS&&(x>=4&&x<=7||x>=17&&x<=20)&&y<=5;
+      const isWin=onS&&(x===10||x===11||x===13||x===14)&&y>=4&&y<=7;
+      const isSideWin=(onW||onE)&&z>=3&&z<=11&&y>=4&&y<=7;
+      if (isDoor) continue;
+      if (isWin||isSideWin) { add(x,y,z,'GL'); continue; }
+      // Support columns every 5 blocks
+      const isCol=(x%5===0&&(onS||onN))||(z%4===0&&(onW||onE));
+      add(x,y,z, isCol?'OL':'SB');
+    }
+  }
+
+  // Interior columns every 5 blocks, full height
+  for (let y=1;y<=H;y++) {
+    [5,10,15,20].forEach(x=>{
+      [3,7,11].forEach(z=>add(x,y,z,'OL'));
+    });
+  }
+
+  // Roof — flat with slight arch (use OL beams + OP planks)
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,H,z,'OP');
+  for (let z=0;z<D;z++) [0,5,10,15,20,24].forEach(x=>add(x,H,z,'OL'));
+
+  // Roof trusses (arched beam, simplified as ridge planks)
+  for (let z=0;z<D;z++) {
+    add(12,H+1,z,'OL');
+  }
+  // Roof slope each side
+  for (let z=0;z<D;z++) {
+    for (let x=0;x<W;x++) {
+      const mid=12, dist=Math.abs(x-mid);
+      if (dist<=5) add(x,H+Math.floor((5-dist)/2),z,'OP');
+    }
+  }
+
+  // Barrels inside
+  [[3,3],[3,8],[3,12],[21,3],[21,8],[21,12]].forEach(([x,z])=>add(x,1,z,'CB'));
+
+  return vox;
+}
+
+function buildBarn() {
+  const vox = [];
+  const add = (x,y,z,t) => vox.push({x,y,z,t});
+  const W=15,D=20;
+
+  // Floor
+  for (let z=0;z<D;z++) for (let x=0;x<W;x++) add(x,0,z,'DT');
+
+  // Walls Y=1–7
+  for (let y=1;y<=7;y++) {
+    for (let x=0;x<W;x++) for (let z=0;z<D;z++) {
+      const onS=z===0,onN=z===D-1,onW=x===0,onE=x===W-1;
+      const onPerim=onS||onN||onW||onE;
+      if (!onPerim) continue;
+      const isDoor=onS&&(x>=6&&x<=8)&&y<=5;
+      const isWin=(onW||onE)&&z>=3&&z<=7&&y>=3&&y<=5;
+      if (isDoor) continue;
+      if (isWin) { add(x,y,z,'GL'); continue; }
+      add(x,y,z,'SP');
+    }
+  }
+
+  // Gambrel roof (barn-style: steep lower slope, shallow upper)
+  // Lower slope — steep (45°)
+  for (let y=8;y<=11;y++) {
+    const slope=y-8; // 0,1,2,3
+    const xmin=slope, xmax=W-1-slope;
+    for (let z=0;z<D;z++) {
+      add(xmin,y,z,'SP'); add(xmax,y,z,'SP');
+      if (y===8) for (let x=xmin;x<=xmax;x++) add(x,y,z,'SP');
+    }
+  }
+  // Upper slope — shallow
+  for (let y=12;y<=14;y++) {
+    const slope=4+(y-12); // 4,5,6
+    const xmin=slope, xmax=W-1-slope;
+    for (let z=0;z<D;z++) {
+      for (let x=xmin;x<=xmax;x++) add(x,y,z,'SP');
+    }
+  }
+  // Ridge
+  for (let z=0;z<D;z++) { add(7,15,z,'SP'); add(7,14,z,'SP'); }
+
+  // Hay bales
+  [[2,2],[2,3],[11,2],[11,3],[2,16],[11,16]].forEach(([x,z])=>{
+    add(x,1,z,'HB'); add(x,2,z,'HB');
+  });
+
+  // Lanterns
+  add(7,6,1,'LN'); add(7,6,D-2,'LN');
+  add(0,3,0,'LN'); add(W-1,3,0,'LN');
+  return vox;
+}
+
+function buildTreehouse() {
+  const vox = [];
+  const add = (x,y,z,t) => vox.push({x,y,z,t});
+
+  // Giant tree trunk (3×3 oak log)
+  for (let y=0;y<=18;y++) {
+    for (let tx=9;tx<=11;tx++) for (let tz=9;tz<=11;tz++) add(tx,y,tz,'OL');
+  }
+
+  // Large canopy of leaves (ellipsoid centered at y=16)
+  for (let y=12;y<=22;y++) {
+    const r=Math.max(0,8-Math.abs(y-17));
+    for (let x=10-r;x<=10+r;x++) for (let z=10-r;z<=10+r;z++) {
+      const dx=x-10,dz=z-10,dy=(y-17)*1.4;
+      if (dx*dx+dz*dz+dy*dy<=r*r+4) {
+        const isTrunk=x>=9&&x<=11&&z>=9&&z<=11;
+        if (!isTrunk) add(x,y,z,'OLV');
+      }
+    }
+  }
+
+  // Platform 1 at Y=9 (large, 12×12)
+  for (let z=4;z<16;z++) for (let x=4;x<16;x++) add(x,9,z,'OP');
+
+  // Platform 1 fence
+  for (let x=4;x<16;x++) { add(x,10,4,'OL'); add(x,10,15,'OL'); }
+  for (let z=4;z<16;z++) { add(4,10,z,'OL'); add(15,10,z,'OL'); }
+
+  // House on platform 1 (9×9, Y=10–14)
+  for (let y=10;y<=14;y++) {
+    for (let x=5;x<15;x++) for (let z=5;z<15;z++) {
+      const onP=x===5||x===14||z===5||z===14;
+      if (!onP) continue;
+      const isDoor=onP&&z===5&&(x===9||x===10)&&y<=12;
+      const isWin=onP&&y>=11&&y<=13&&(x===7||x===8||x===11||x===12);
+      if (isDoor) continue;
+      if (isWin) { add(x,y,z,'GP'); continue; }
+      add(x,y,z,'OP');
+    }
+  }
+  // House floor
+  for (let z=5;z<15;z++) for (let x=5;x<15;x++) add(x,9,z,'OP');
+  // House roof
+  for (let i=0;i<=4;i++) {
+    const yy=15+i;
+    for (let z=5-i;z<15+i;z++) for (let x=5;x<15;x++) {
+      if (z===5-i||z===14+i) add(x,yy,z,'SP');
+    }
+    for (let x=5;x<15;x++) for (let z=5-i;z<=14+i;z++) add(x,yy,z,'SP');
+  }
+
+  // Platform 2 — smaller, higher (8×8 at Y=17)
+  for (let z=7;z<15;z++) for (let x=7;x<15;x++) add(x,17,z,'OP');
+
+  // Rope bridge support beams (Y=9, going South)
+  for (let z=0;z<4;z++) { add(10,9,z,'OL'); add(10,8,z,'OL'); }
+
+  // Ladder on trunk
+  for (let y=1;y<=9;y++) add(9,y,9,'OL'); // simplified with log
+
+  // Lanterns hanging
+  [[10,9,4],[6,9,6],[14,9,6],[6,9,14],[14,9,14]].forEach(([x,y,z])=>add(x,y,z,'LN'));
+
+  return vox;
+}
+
+// ─── BUILD CATALOGUE ────────────────────────────────────────────────────────
+const BUILDS = [
+  { name:'Starter Survival House', diff:'Beginner',     time:'45–60 min',  dims:'15×11×8',  fn: buildStarterHouse },
+  { name:'Medieval House',          diff:'Intermediate', time:'75–90 min',  dims:'13×15×10', fn: buildMedievalHouse },
+  { name:'Modern Luxury House',     diff:'Intermediate', time:'90–120 min', dims:'20×15×12', fn: buildModernHouse },
+  { name:'Fantasy Wizard Tower',    diff:'Advanced',     time:'60–90 min',  dims:'19×19×32', fn: buildWizardTower },
+  { name:'Medieval Castle',         diff:'Expert',       time:'3–5 hours',  dims:'35×35×20', fn: buildMedievalCastle },
+  { name:'Japanese Pagoda',         diff:'Advanced',     time:'2–3 hours',  dims:'14×14×32', fn: buildJapanesePagoda },
+  { name:'Windmill',                diff:'Intermediate', time:'60–90 min',  dims:'11×11×25', fn: buildWindmill },
+  { name:'Large Storage Warehouse', diff:'Intermediate', time:'60–90 min',  dims:'25×15×10', fn: buildWarehouse },
+  { name:'Survival Barn',           diff:'Beginner',     time:'45–60 min',  dims:'15×20×15', fn: buildBarn },
+  { name:'Giant Treehouse',         diff:'Advanced',     time:'2–3 hours',  dims:'22×22×30', fn: buildTreehouse },
+];
+
+const DIFF_BADGE = { 'Beginner':'beginner','Intermediate':'intermediate','Advanced':'advanced','Expert':'expert' };
+
+// ─── THREE.JS SETUP ─────────────────────────────────────────────────────────
+const wrap = document.getElementById('canvas-wrap');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+wrap.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+// Sky gradient background
+const canvas2 = document.createElement('canvas');
+canvas2.width = 2; canvas2.height = 512;
+const ctx2 = canvas2.getContext('2d');
+const sky = ctx2.createLinearGradient(0, 0, 0, 512);
+sky.addColorStop(0, '#1a1a5e');
+sky.addColorStop(0.4, '#1560bd');
+sky.addColorStop(0.7, '#5ba3d9');
+sky.addColorStop(1, '#b0d9f0');
+ctx2.fillStyle = sky; ctx2.fillRect(0, 0, 2, 512);
+scene.background = new THREE.CanvasTexture(canvas2);
+
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 2000);
+camera.position.set(40, 35, 60);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.minDistance = 5; controls.maxDistance = 400;
+
+// Lighting
+const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+scene.add(ambient);
+const sun = new THREE.DirectionalLight(0xfffbe8, 1.0);
+sun.position.set(80, 120, 60);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 600;
+sun.shadow.camera.left = -150; sun.shadow.camera.right = 150;
+sun.shadow.camera.top = 150; sun.shadow.camera.bottom = -150;
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0x8888ff, 0.25);
+fill.position.set(-60, 40, -60);
+scene.add(fill);
+
+// Ground plane
+const groundGeo = new THREE.PlaneGeometry(500, 500);
+const groundMat = new THREE.MeshLambertMaterial({ color: 0x3d7a27 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.01;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Grid
+const grid = new THREE.GridHelper(200, 200, 0x000000, 0x000000);
+grid.material.opacity = 0.08; grid.material.transparent = true;
+scene.add(grid);
+
+// ─── BLOCK GEOMETRY ─────────────────────────────────────────────────────────
+const GEO = new THREE.BoxGeometry(1, 1, 1);
+
+// ─── BUILD LOADING ──────────────────────────────────────────────────────────
+let buildGroup = new THREE.Group();
+scene.add(buildGroup);
+let maxY = 30;
+let currentVoxels = [];
+let exploded = false;
+
+function loadBuild(idx) {
+  document.getElementById('loading').classList.remove('hidden');
+
+  setTimeout(() => {
+    // Clear
+    while (buildGroup.children.length) {
+      buildGroup.remove(buildGroup.children[0]);
+    }
+
+    const b = BUILDS[idx];
+    const voxels = b.fn();
+    currentVoxels = voxels;
+
+    // Find bounds
+    let minX=Infinity,maxX=-Infinity,minY2=Infinity,maxY2=-Infinity,minZ=Infinity,maxZ=-Infinity;
+    voxels.forEach(v=>{
+      minX=Math.min(minX,v.x);maxX=Math.max(maxX,v.x);
+      minY2=Math.min(minY2,v.y);maxY2=Math.max(maxY2,v.y);
+      minZ=Math.min(minZ,v.z);maxZ=Math.max(maxZ,v.z);
+    });
+    const cx=(minX+maxX)/2, cy=(minY2+maxY2)/2, cz=(minZ+maxZ)/2;
+    maxY = maxY2;
+
+    // Layer slider
+    const slider = document.getElementById('layer-slider');
+    slider.max = maxY2;
+    slider.value = maxY2;
+    document.getElementById('layer-val').textContent = 'All';
+
+    // Group by block type
+    const groups = {};
+    voxels.forEach(v => {
+      if (!groups[v.t]) groups[v.t] = [];
+      groups[v.t].push(v);
+    });
+
+    // Instanced meshes
+    const meshes = [];
+    Object.entries(groups).forEach(([type, list]) => {
+      const blockDef = BLOCKS[type];
+      if (!blockDef) return;
+      const mats = blockDef.mats;
+
+      list.forEach(v => {
+        const mesh = new THREE.Mesh(GEO, mats);
+        mesh.position.set(v.x - cx, v.y - minY2, v.z - cz);
+        mesh.castShadow = !blockDef.transparent;
+        mesh.receiveShadow = true;
+        mesh.userData = { origY: v.y - minY2, layerY: v.y, type };
+        buildGroup.add(mesh);
+        meshes.push(mesh);
+      });
+    });
+
+    // Camera target
+    controls.target.set(0, (maxY2-minY2)/2, 0);
+    const size = Math.max(maxX-minX, maxY2-minY2, maxZ-minZ);
+    camera.position.set(size*1.2, size*0.9, size*1.5);
+    controls.update();
+
+    // Update UI
+    document.getElementById('top-title').textContent = b.name;
+    const badge = document.getElementById('top-badge');
+    badge.textContent = b.diff; badge.className = 'badge ' + DIFF_BADGE[b.diff];
+    badge.style.display = 'inline-block';
+    document.getElementById('build-info').innerHTML =
+      `<h3>${b.name}</h3><p>⏱ ${b.time} &nbsp;|&nbsp; 📐 ${b.dims}<br>Difficulty: ${b.diff}</p>`;
+
+    // Legend
+    const legendEl = document.getElementById('legend-items');
+    legendEl.innerHTML = '';
+    const used = new Set(voxels.map(v=>v.t));
+    used.forEach(t => {
+      const bd = BLOCKS[t];
+      if (!bd) return;
+      const div = document.createElement('div');
+      div.className = 'legend-item';
+      div.innerHTML = `<div class="legend-swatch" style="background:${bd.color}"></div><span class="legend-name">${bd.name}</span>`;
+      legendEl.appendChild(div);
+    });
+
+    document.getElementById('loading').classList.add('hidden');
+  }, 50);
+}
+
+// Layer slider
+document.getElementById('layer-slider').addEventListener('input', e => {
+  const val = parseInt(e.target.value);
+  const label = document.getElementById('layer-val');
+  label.textContent = val >= maxY ? 'All' : `Y=${val}`;
+  buildGroup.children.forEach(mesh => {
+    const ly = mesh.userData.layerY;
+    if (ly !== undefined) mesh.visible = ly <= val;
+  });
+});
+
+// Reset view
+document.getElementById('btn-reset').addEventListener('click', () => {
+  controls.reset(); controls.update();
+});
+
+// Explode toggle
+document.getElementById('btn-explode').addEventListener('click', () => {
+  exploded = !exploded;
+  buildGroup.children.forEach(mesh => {
+    const orig = mesh.userData.origY;
+    if (orig !== undefined) {
+      mesh.position.y = exploded ? orig * 1.5 : orig;
+    }
+  });
+  document.getElementById('btn-explode').textContent = exploded ? 'Collapse' : 'Explode';
+});
+
+// Resize
+function onResize() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+window.addEventListener('resize', onResize);
+onResize();
+
+// Animate
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ─── BUILD LIST UI ──────────────────────────────────────────────────────────
+const list = document.getElementById('build-list');
+BUILDS.forEach((b, i) => {
+  const btn = document.createElement('button');
+  btn.className = 'build-btn';
+  btn.innerHTML = `<span class="num">Build ${i+1}</span><span class="name">${b.name}</span><span class="meta">${b.diff} · ${b.time}</span>`;
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.build-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    loadBuild(i);
+  });
+  list.appendChild(btn);
+});
+
+// Load first build on start
+document.querySelector('.build-btn').classList.add('active');
+loadBuild(0);
